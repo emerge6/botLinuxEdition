@@ -176,7 +176,6 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             can_pin_messages=default_permissions.can_pin_messages
         )
         
-        # Применяем мут
         logger.info(f"Attempting to mute user {target_user.id} in chat {chat_id} until {until_date or 'permanent'}")
         await context.bot.restrict_chat_member(
             chat_id=chat_id,
@@ -323,7 +322,7 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     chat_id = update.effective_chat.id
-    target_user, _ = await get_target_user(update, context, context.args)
+    target_user, duration_arg = await get_target_user(update, context, context.args)
     if not target_user:
         return
     
@@ -338,11 +337,13 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.error(f"Target status check failed: {str(e)}")
         return
     
+    duration, duration_text = parse_duration(duration_arg)
     db = Database(chat_id)
-    warns = db.add_warn(target_user.id)
+    warns = db.add_warn(target_user.id, duration)
     mention = get_user_mention(target_user)
+    time_msg = f" на {duration_text}" if duration else ""
     await update.message.reply_text(
-        f"⚠️ {mention} получил предупреждение ({warns}/3)\n"
+        f"⚠️ {mention} получил предупреждение{time_msg} ({warns}/3)\n"
         f"ID: {target_user.id}\n"
         f"Админ: {get_user_mention(update.effective_user)}",
         parse_mode='Markdown'
@@ -381,7 +382,7 @@ async def unwarn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     db = Database(chat_id)
     warns = db.remove_warn(target_user.id)
-    if warns < 0:
+    if warns < 0 or warns == 0:
         await update.message.reply_text(f"ℹ️ У {get_user_mention(target_user)} нет предупреждений")
         logger.info(f"No warnings to remove for user {target_user.id} in chat {chat_id}")
         return
@@ -501,15 +502,15 @@ async def mutelist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def warnlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
     db = Database(chat_id)
-    warns = db.get_warns()
-    
+    warns = db.get_warns_with_details()
+
     if not warns:
         await update.message.reply_text("📜 Предупреждений нет")
         logger.info(f"No warns found in chat {chat_id}")
         return
-    
+
     text = "📜 Список предупреждений:\n\n"
-    for user_id, count in warns.items():
+    for user_id, (count, until) in warns.items():
         try:
             member = await context.bot.get_chat_member(chat_id, user_id)
             username = f"@{member.user.username or 'нет'}"
@@ -517,14 +518,16 @@ async def warnlist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except TelegramError:
             username = "неизвестно"
             mention = f"ID {user_id}"
-        
+
+        time_msg = f"до {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(until))}" if until else "без срока"
         text += (
             f"👤 {mention}\n"
             f"ID: {user_id}\n"
             f"Username: {username}\n"
-            f"Предупреждений: {count}/3\n\n"
+            f"Предупреждений: {count}/3\n"
+            f"Срок: {time_msg}\n\n"
         )
-    
+
     if len(text) > 4096:
         for i in range(0, len(text), 4096):
             await update.message.reply_text(text[i:i+4096], parse_mode='Markdown')
